@@ -1,8 +1,13 @@
+# This project takes reviews from Amazon, IMDB, and Yelp, and predicts whether
+# these reviews are positive or negative. To train the model, we use a dataset
+# with pre-classified reviews. We then create a model that can predict
+# classifications.
+
 # -*- coding: utf-8 -*-
 # @Author: Hannah Shader
 # @Date:   2023-10-18 12:02:15
 # @Last Modified by:   Hannah Shader
-# @Last Modified time: 2023-10-26 18:35:52
+# @Last Modified time: 2023-10-26 18:52:04
 import os
 import pandas as pd
 import string
@@ -29,21 +34,6 @@ nltk.download("stopwords")
 nltk.download("wordnet")
 
 
-# Preprocessing Function
-def text_list(text_list):
-    new_text_list = []
-    for sentence in text_list:
-        new_sentence = ""
-        tokens = nltk.word_tokenize(sentence)
-        for token, pos in nltk.pos_tag(tokens):
-            if not token.isupper() and len(token) != 1:
-                token = token.lower()
-            token = "".join(char for char in token if char not in string.punctuation)
-            new_sentence += token + " "
-        new_text_list.append(new_sentence.strip())
-    return new_text_list
-
-
 # Error on Training Data for each classifier
 # Not needed for classification, but used to visualize error for training
 # vs. validation data
@@ -66,8 +56,8 @@ def get_training_auroc_for_classifier(
     return dataframe
 
 
-# Get
-def preprocess_text_list(text_list):
+# Lemmatize tokens from each review, and rejoin
+def preprocess(text_list):
     lemmatizer = WordNetLemmatizer()
     new_text_list = []
     for sentence in text_list:
@@ -80,6 +70,7 @@ def preprocess_text_list(text_list):
     return new_text_list
 
 
+# Get BERT embeddings for each sentence
 def get_bert_embedding(sentence_list, pooling_strategy="cls"):
     embedding_list = []
     for nn, sentence in enumerate(sentence_list):
@@ -122,26 +113,29 @@ if __name__ == "__main__":
         for i in range(len(original_tr_text_list))
     ]
 
-    # Step 2: Sort the combined array based on the values from the first array
+    # Shuffle the array to avoid bias from selecting heldout data from
+    # neighboring parts of the dataset
     random.shuffle(combined)
 
-    # Step 3: Reconstruct the sorted arrays
     shuffled_tr_text_list = [x[0] for x in combined]
     shuffled_tr_values_list = [x[1] for x in combined]
 
-    # getting heldout
-    # 60 data points is 10 percent
+    # Set aside heldout data
     heldout_tr_text_list = shuffled_tr_text_list[:60]
     heldout_tr_values_list = shuffled_tr_values_list[:60]
 
+    # Lemmatize and embed data not held out
     tr_text_list = shuffled_tr_text_list[60:]
     tr_values_list = shuffled_tr_values_list[60:]
-    new_tr_text_list = preprocess_text_list(tr_text_list)
+    new_tr_text_list = preprocess(tr_text_list)
     embeddings = get_bert_embedding(new_tr_text_list)
 
-    max_feat_list = [1827]
+    # Select hyperparameters for maximum features and
+    # C values
+    max_feat_list = [1827, 1820, 1815, 1810]
     chosen_C_values = [0.01, 0.1, 1, 10, 100]
 
+    # Get all possible combinations of hyperparameters
     combinations = []
     for max_feat in max_feat_list:
         for c in chosen_C_values:
@@ -155,11 +149,12 @@ if __name__ == "__main__":
     results_df = pd.DataFrame(columns=["max_feat", "C", "AUROC validation"])
     roc_auc_scores = []
 
+    # train and test models with different combinations of hyperparamters
     for combination in combinations:
         max_feat = combination[0]
         c = combination[1]
 
-        tr_text_list = preprocess_text_list(tr_text_list)
+        tr_text_list = preprocess(tr_text_list)
         preprocessed_text_lists.append(tr_text_list)
         clf = sklearn.linear_model.LogisticRegression(C=c, max_iter=20)
 
@@ -184,23 +179,20 @@ if __name__ == "__main__":
         print("c is:", c)
         print("max_feat is:", max_feat)
 
-    # get the variables back to the chosen model
-    print("roc_auc_scores is: ", roc_auc_scores)
+    # Select and store hyperparameters for the best model
     max_index = max(range(len(roc_auc_scores)), key=lambda i: roc_auc_scores[i])
-    print("max_index is:", max_index)
     clf = models[max_index]
     max_feat = hyperparam_list[max_index][0]
     c = hyperparam_list[max_index][1]
-    print("c is:", c)
-    tr_text_list = preprocess_text_list(tr_text_list)
+    tr_text_list = preprocess(tr_text_list)
 
-    # get a datafram to store data
+    # Get a Dataframe to store results of training/testing each canidate model
     results_df = get_training_auroc_for_classifier(
         models, results_df, preprocessed_text_lists, tr_values_list
     )
     grouped = results_df.groupby("C").mean().reset_index()
 
-    # Plot the accuracy vs. C value
+    # Plot the accuracy vs. C value for each canidate model
     plt.figure(figsize=(10, 6))
     plt.plot(
         grouped["C"], grouped["AUROC validation"], marker="o", label="AUROC Validation"
@@ -214,22 +206,22 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.show()
 
-    # reset heldout data back to all values shuffled
+    # Reset heldout data back to all values shuffled
     tr_text_list = shuffled_tr_text_list
     tr_values_list = shuffled_tr_values_list
-    new_tr_text_list = preprocess_text_list(tr_text_list)
+    new_tr_text_list = preprocess(tr_text_list)
     embeddings = get_bert_embedding(new_tr_text_list)
 
-    # retrain model with all values
-    tr_text_list = preprocess_text_list(tr_text_list)
+    # Retrain selected model with all values
+    tr_text_list = preprocess(tr_text_list)
     preprocessed_text_lists.append(tr_text_list)
     clf = sklearn.linear_model.LogisticRegression(C=c, max_iter=20)
 
-    # fit the data
+    # Fit the data
     clf.fit(embeddings, tr_values_list)
     te_text_list = x_test_df["text"].values.tolist()
 
-    # get FP and FN values for report from heldout data
+    # Get FP and FN values for from heldout data for selected model
     predictions = clf.predict(embeddings)
     print(predictions)
     print(tr_values_list)
@@ -253,10 +245,10 @@ if __name__ == "__main__":
     for i in range(len(false_negative_indices)):
         print(tr_text_list[false_negative_indices[i]])
 
-    # predict on test data
-    new_te_text_list = preprocess_text_list(te_text_list)
+    # Predict using the test data with the chosen model
+    new_te_text_list = preprocess(te_text_list)
     test_embeddings = get_bert_embedding(new_te_text_list)
-    te_text_list = preprocess_text_list(te_text_list)
+    te_text_list = preprocess(te_text_list)
 
     predictions = clf.predict_proba(test_embeddings)
     positive_class_probs = predictions[:, 1]
